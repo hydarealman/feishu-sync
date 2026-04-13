@@ -1,146 +1,109 @@
+# scripts/fetch_feishu_doc.py
 import os
-import re
 import requests
-from github import Github
-from urllib.parse import urlparse
+import re
+from typing import Optional
 
-# --- 环境变量读取 ---
-FEISHU_APP_ID = os.environ.get('FEISHU_APP_ID')
-FEISHU_APP_SECRET = os.environ.get('FEISHU_APP_SECRET')
-GITHUB_TOKEN = os.environ.get('GITHUB_TOKEN')
-INPUT_URL = os.environ.get('DOC_ID')      # 这里现在填的是完整网址
-FILENAME = os.environ.get('FILENAME')
-
-if not all([FEISHU_APP_ID, FEISHU_APP_SECRET, GITHUB_TOKEN, INPUT_URL, FILENAME]):
-    print("错误: 缺少必要的环境变量，请检查 Secrets 和输入参数。")
-    exit(1)
-
-def get_tenant_access_token():
+def get_tenant_access_token(app_id: str, app_secret: str) -> Optional[str]:
+    """使用 App ID 和 App Secret 获取 tenant_access_token"""
     url = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal"
-    headers = {"Content-Type": "application/json; charset=utf-8"}
-    payload = {"app_id": FEISHU_APP_ID, "app_secret": FEISHU_APP_SECRET}
-    resp = requests.post(url, headers=headers, json=payload)
-    if resp.status_code == 200:
-        return resp.json().get("tenant_access_token")
-    else:
-        print(f"获取飞书 Token 失败: {resp.text}")
-        exit(1)
-
-def parse_url(url_str):
-    """从飞书知识库 URL 中提取 space_id 和 node_token"""
-    # 支持两种格式：
-    # 1. https://xxx.feishu.cn/wiki/space/{space_id}
-    # 2. https://xxx.feishu.cn/wiki/{node_token}
-    parsed = urlparse(url_str)
-    path = parsed.path.strip('/')
-    
-    if path.startswith('wiki/'):
-        parts = path.split('/')
-        if len(parts) >= 3 and parts[1] == 'space':
-            space_id = parts[2]
-            return space_id, None
-        elif len(parts) == 2:
-            token = parts[1]
-            return None, token
-    print(f"无法从 URL 解析出有效信息: {url_str}")
-    exit(1)
-
-def resolve_token(token, identifier):
-    """
-    输入 identifier 可能是 space_id 或 node_token。
-    统一返回 (space_id, node_token)
-    """
-    headers = {"Authorization": f"Bearer {token}"}
-    
-    # 1. 尝试作为 space_id
-    space_url = f"https://open.feishu.cn/open-apis/wiki/v2/spaces/{identifier}"
-    resp = requests.get(space_url, headers=headers)
-    if resp.status_code == 200:
-        data = resp.json().get("data", {}).get("space", {})
-        space_id = data.get("space_id")
-        root_node = data.get("root_node_token")
-        if space_id and root_node:
-            print(f"✅ 识别为 space_id，根节点 token: {root_node}")
-            return space_id, root_node
-    
-    # 2. 作为 node_token，先获取其所属 space_id
-    node_url = f"https://open.feishu.cn/open-apis/wiki/v2/nodes/{identifier}"
-    resp = requests.get(node_url, headers=headers)
-    if resp.status_code == 200:
-        data = resp.json().get("data", {}).get("node", {})
-        space_id = data.get("space_id")
-        if space_id:
-            print(f"✅ 识别为 node_token，所属 space_id: {space_id}")
-            return space_id, identifier
-    
-    print(f"❌ 无法解析标识符: {identifier}")
-    exit(1)
-
-def get_wiki_node_content(token, space_id, node_token):
-    url = f"https://open.feishu.cn/open-apis/wiki/v2/spaces/{space_id}/nodes/{node_token}"
-    headers = {"Authorization": f"Bearer {token}"}
-    resp = requests.get(url, headers=headers)
-    if resp.status_code != 200:
-        print(f"获取节点内容失败: {resp.text}")
-        exit(1)
-
-    data = resp.json().get("data", {}).get("node", {})
-    content_blocks = data.get("children", [])
-
-    def extract_text_from_blocks(blocks):
-        lines = []
-        for block in blocks:
-            block_type = block.get("block_type")
-            if block_type in range(1, 12):
-                text_elements = block.get("text", {}).get("elements", [])
-                line = "".join(e.get("text_run", {}).get("content", "") for e in text_elements if "text_run" in e)
-                if line:
-                    prefix = {
-                        1: "# ", 2: "## ", 3: "### ", 4: "#### ", 5: "##### ", 6: "###### ",
-                        7: "- ", 8: "1. ", 9: "> ", 10: "```\n", 11: ""
-                    }.get(block_type, "")
-                    if block_type == 10:
-                        lines.append(prefix + line + "\n```")
-                    else:
-                        lines.append(prefix + line)
-            children = block.get("children", [])
-            if children:
-                lines.extend(extract_text_from_blocks(children))
-        return lines
-
-    lines = extract_text_from_blocks(content_blocks)
-    return "\n\n".join(lines)
-
-def push_to_github(filename, content):
-    g = Github(GITHUB_TOKEN)
-    repo_name = os.environ.get('GITHUB_REPOSITORY')
-    if not repo_name:
-        print("错误: 无法获取仓库信息。")
-        exit(1)
-    repo = g.get_repo(repo_name)
-    commit_msg = f"从飞书知识库同步 {INPUT_URL}"
+    payload = {
+        "app_id": app_id,
+        "app_secret": app_secret
+    }
     try:
-        contents = repo.get_contents(filename)
-        repo.update_file(contents.path, commit_msg, content, contents.sha)
-        print(f"✅ 文件 {filename} 更新成功！")
-    except Exception:
-        repo.create_file(filename, commit_msg, content)
-        print(f"✅ 文件 {filename} 创建成功！")
-    finally:
-        g.close()
+        response = requests.post(url, json=payload)
+        response.raise_for_status()
+        data = response.json()
+        if data.get("code") != 0:
+            print(f"获取 tenant_access_token 失败: {data}")
+            return None
+        return data.get("tenant_access_token")
+    except Exception as e:
+        print(f"请求 tenant_access_token 时出错: {e}")
+        return None
 
-# --- 主流程 ---
+def get_document_id_from_wiki_url(wiki_url: str, app_id: str, app_secret: str) -> Optional[str]:
+    """从知识库URL中提取 node_token 并换取真正的 document_id"""
+    # 1. 先获取 access token
+    token = get_tenant_access_token(app_id, app_secret)
+    if not token:
+        return None
+
+    # 2. 提取 node_token
+    match = re.search(r'/wiki/([a-zA-Z0-9]+)', wiki_url)
+    if not match:
+        print(f"错误：无法从URL中提取node_token: {wiki_url}")
+        return None
+    node_token = match.group(1)
+    print(f"提取到的 node_token: {node_token}")
+
+    # 3. 调用 API 获取节点信息
+    api_url = "https://open.feishu.cn/open-apis/wiki/v2/spaces/get_node"
+    headers = {"Authorization": f"Bearer {token}"}
+    params = {"token": node_token}
+    
+    try:
+        response = requests.get(api_url, headers=headers, params=params)
+        response.raise_for_status()
+        data = response.json()
+        if data.get("code") != 0:
+            print(f"飞书API返回错误: {data}")
+            return None
+        
+        node_info = data.get("data", {}).get("node", {})
+        obj_type = node_info.get("obj_type")
+        obj_token = node_info.get("obj_token")
+        
+        if obj_type != "docx":
+            print(f"警告：该节点不是文档类型，而是 {obj_type}。")
+            return None
+            
+        print(f"成功获取 document_id: {obj_token}")
+        return obj_token
+    except Exception as e:
+        print(f"API请求失败: {e}")
+        return None
+
+def fetch_and_save_document(document_id: str, token: str, output_path: str):
+    """示例：根据 document_id 获取文档内容并保存为 Markdown 文件"""
+    url = f"https://open.feishu.cn/open-apis/docx/v1/documents/{document_id}/raw_content"
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        response = requests.get(url, headers=headers)
+        response.raise_for_status()
+        data = response.json()
+        if data.get("code") != 0:
+            print(f"获取文档内容失败: {data}")
+            return
+        
+        content = data.get("data", {}).get("content", "")
+        with open(output_path, "w", encoding="utf-8") as f:
+            f.write(content)
+        print(f"文档已保存至: {output_path}")
+    except Exception as e:
+        print(f"保存文档时出错: {e}")
+
 if __name__ == "__main__":
-    token = get_tenant_access_token()
-    print(f"🔍 正在解析网址: {INPUT_URL}")
-    space_id, node_token = parse_url(INPUT_URL)
-    if not space_id or not node_token:
-        # 如果 parse_url 只返回了一个值，则调用 resolve_token 补全
-        identifier = space_id or node_token
-        space_id, node_token = resolve_token(token, identifier)
-    print(f"📄 正在获取节点内容 (space_id={space_id}, node_token={node_token})...")
-    doc_content = get_wiki_node_content(token, space_id, node_token)
-    if not doc_content:
-        print("⚠️ 警告：获取到的内容为空，将推送空文件。")
-    push_to_github(FILENAME, doc_content)
-    print("🎉 同步完成！")
+    # 从 GitHub Secrets 环境变量中读取敏感信息
+    APP_ID = os.environ.get("FEISHU_APP_ID")
+    APP_SECRET = os.environ.get("FEISHU_APP_SECRET")
+    WIKI_URL = os.environ.get("FEISHU_WIKI_URL", "https://scnfpjgsylvl.feishu.cn/wiki/CAItwR71aiWTtPkq4hscgk53n9g")
+    OUTPUT_FILE = os.environ.get("OUTPUT_FILE", "doc.md")
+    
+    if not APP_ID or not APP_SECRET:
+        print("错误：请设置环境变量 FEISHU_APP_ID 和 FEISHU_APP_SECRET")
+        exit(1)
+    
+    # 1. 获取 token (为了复用，我们先获取一次)
+    token = get_tenant_access_token(APP_ID, APP_SECRET)
+    if not token:
+        exit(1)
+    
+    # 2. 转换 wiki URL 到真实的 document_id
+    doc_id = get_document_id_from_wiki_url(WIKI_URL, APP_ID, APP_SECRET)
+    if not doc_id:
+        exit(1)
+    
+    # 3. 拉取文档内容并保存
+    fetch_and_save_document(doc_id, token, OUTPUT_FILE)
