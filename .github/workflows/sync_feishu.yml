@@ -1,9 +1,18 @@
 name: Sync Feishu Doc
 
 on:
-  workflow_dispatch:        # 允许手动触发
-  schedule:
-    - cron: '0 */6 * * *'   # 每6小时自动执行一次
+  workflow_dispatch:
+    inputs:
+      feishu_url:
+        description: '飞书文档/知识库的完整网址'
+        required: true
+        type: string
+        default: 'https://scnfpjgsylvl.feishu.cn/wiki/CAItwR71aiWTtPkq4hscgk53n9g'
+      output_filename:
+        description: '保存的文件名 (可选)'
+        required: false
+        type: string
+        default: 'feishu_doc.md'
 
 jobs:
   sync:
@@ -24,14 +33,14 @@ jobs:
         env:
           FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
           FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
-          FEISHU_WIKI_URL: "https://scnfpjgsylvl.feishu.cn/wiki/CAItwR71aiWTtPkq4hscgk53n9g"
-          OUTPUT_FILE: "feishu_doc.md"
+          FEISHU_WIKI_URL: ${{ github.event.inputs.feishu_url }}
+          OUTPUT_FILE: ${{ github.event.inputs.output_filename }}
         run: python scripts/fetch_feishu_doc.py
 
       - name: Commit and push changes
         run: |
           git config --global user.name 'github-actions[bot]'
           git config --global user.email 'github-actions[bot]@users.noreply.github.com'
-          git add feishu_doc.md
-          git commit -m "Auto sync Feishu doc" || echo "No changes to commit"
+          git add ${{ github.event.inputs.output_filename }}
+          git commit -m "Auto sync from ${{ github.event.inputs.feishu_url }}" || echo "No changes to commit"
           git push
